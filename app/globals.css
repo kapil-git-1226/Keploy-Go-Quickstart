@@ -1,0 +1,352 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+   Design tokens: Amber Minimal
+   A small set of semantic CSS variables. Tailwind colors (page, surface,
+   line, fg, muted, accent, ...) resolve to these, so a single `.dark` class
+   on <html> re-themes the entire site with no duplicated class lists.
+   Amber is the single accent; everything else is a warm neutral.
+   ========================================================================== */
+:root {
+  --bg: 253 252 250;
+  --surface: 255 255 255;
+  --surface-2: 248 246 243;
+  --border: 232 227 220;
+  --border-strong: 213 206 196;
+  --fg: 28 25 23;
+  --fg-muted: 87 83 78;
+  --fg-subtle: 145 138 129;
+  --accent: 180 83 9;
+  --accent-fg: 255 255 255;
+  color-scheme: light;
+}
+
+.dark {
+  --bg: 12 10 9;
+  --surface: 26 23 21;
+  --surface-2: 39 35 32;
+  --border: 51 46 42;
+  --border-strong: 74 67 61;
+  --fg: 245 245 244;
+  --fg-muted: 168 162 158;
+  --fg-subtle: 124 117 110;
+  --accent: 251 191 36;
+  --accent-fg: 30 20 5;
+  color-scheme: dark;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    /* keep anchored headings clear of the sticky header */
+    scroll-padding-top: 6rem;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-page text-fg antialiased;
+  }
+
+  ::selection {
+    background-color: rgb(var(--accent) / 0.22);
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent));
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  hr {
+    @apply border-line;
+  }
+
+  /* Thin, unobtrusive scrollbars for code panes */
+  .scroll-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--border-strong)) transparent;
+  }
+  .scroll-thin::-webkit-scrollbar {
+    height: 8px;
+    width: 8px;
+  }
+  .scroll-thin::-webkit-scrollbar-thumb {
+    background: rgb(var(--border-strong));
+    border-radius: 99px;
+  }
+}
+
+@layer components {
+  /* ------------------------------------------------------------------
+     Long-form documentation body
+     ------------------------------------------------------------------ */
+  .doc {
+    font-size: 1rem;
+    line-height: 1.75;
+    color: rgb(var(--fg));
+  }
+
+  .doc > * + * {
+    margin-top: 1.15rem;
+  }
+
+  .doc :where(h2) {
+    font-size: 1.6rem;
+    line-height: 1.25;
+    font-weight: 640;
+    letter-spacing: -0.015em;
+    margin-top: 3.75rem;
+    margin-bottom: 0.25rem;
+    scroll-margin-top: 6rem;
+    position: relative;
+  }
+
+  .doc :where(h3) {
+    font-size: 1.2rem;
+    line-height: 1.4;
+    font-weight: 620;
+    letter-spacing: -0.01em;
+    margin-top: 2.5rem;
+    margin-bottom: 0.25rem;
+    scroll-margin-top: 6rem;
+    position: relative;
+  }
+
+  .doc :where(h2) + *,
+  .doc :where(h3) + * {
+    margin-top: 0.85rem;
+  }
+
+  /*
+     Prose styles are wrapped in :where() so they contribute no specificity.
+     Components rendered inside the article (hero CTAs, callout labels, diagram
+     captions) style themselves with Tailwind utilities, and those utilities
+     must win. Without this, `.doc a` outranks `.text-accent-fg` and an
+     accent-coloured button ends up with accent-coloured, invisible text on
+     top of its own accent background.
+  */
+  .doc :where(p) {
+    color: rgb(var(--fg-muted));
+  }
+
+  .doc :where(strong) {
+    color: rgb(var(--fg));
+    font-weight: 640;
+  }
+
+  /* Scoped to prose containers, so links inside components are untouched. */
+  .doc :where(p, li, td, th, blockquote) :where(a:not(.heading-anchor):not(.toc-link)) {
+    color: rgb(var(--accent));
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1px;
+    text-decoration-color: rgb(var(--accent) / 0.4);
+    font-weight: 500;
+  }
+  .doc :where(p, li, td, th, blockquote) :where(a:not(.heading-anchor):not(.toc-link)):hover {
+    text-decoration-color: rgb(var(--accent));
+  }
+
+  .doc .heading-anchor {
+    position: absolute;
+    left: -1.1em;
+    top: 0;
+    padding-right: 0.35em;
+    color: rgb(var(--accent));
+    opacity: 0;
+    font-weight: 500;
+    text-decoration: none;
+    transition: opacity 0.15s ease;
+  }
+  .doc :where(h2, h3):hover .heading-anchor,
+  .doc .heading-anchor:focus-visible {
+    opacity: 0.6;
+  }
+
+  /*
+     Prose lists only. Markdown output is class-less; every component that
+     renders a list carries classes. Guarding on that keeps list markers and
+     numbering out of components such as the hero metadata and workflow steps.
+  */
+  .doc :where(ul:not([class]), ol:not([class])) {
+    padding-left: 1.35rem;
+    color: rgb(var(--fg-muted));
+  }
+  .doc :where(ul:not([class])) {
+    list-style: disc;
+  }
+  .doc :where(ol:not([class])) {
+    list-style: decimal;
+  }
+  .doc :where(li:not([class])) {
+    margin-top: 0.4rem;
+  }
+  .doc :where(li:not([class]))::marker {
+    color: rgb(var(--fg-subtle));
+  }
+  .doc :where(li:not([class])) > :where(ul, ol) {
+    margin-top: 0.4rem;
+  }
+
+  /* The mobile "On this page" control is rendered inside the article (below the
+     hero). Opt it out of the prose list styling above. */
+  .doc .toc-list {
+    list-style: none;
+    padding-left: 0;
+  }
+  .doc .toc-list li {
+    margin-top: 0;
+  }
+
+  .doc :where(blockquote) {
+    border-left: 3px solid rgb(var(--accent) / 0.5);
+    padding-left: 1rem;
+    color: rgb(var(--fg-muted));
+    font-style: italic;
+  }
+
+  .doc :where(hr) {
+    margin-top: 3rem;
+    margin-bottom: 3rem;
+  }
+
+  .doc :where(table) {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+  .doc :where(th, td) {
+    border: 1px solid rgb(var(--border));
+    padding: 0.6rem 0.8rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  .doc :where(th) {
+    background: rgb(var(--surface-2));
+    color: rgb(var(--fg));
+    font-weight: 600;
+  }
+  .doc :where(td) {
+    color: rgb(var(--fg-muted));
+  }
+
+  /* inline code only; fenced blocks are handled by the CodeBlock component */
+  .doc :where(:not(pre) > code) {
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 0.85em;
+    padding: 0.15em 0.4em;
+    border-radius: 5px;
+    border: 1px solid rgb(var(--border));
+    background: rgb(var(--surface-2));
+    color: rgb(var(--fg));
+    /* Long snippets (error strings, full commands) must be able to wrap, or
+       they push the whole page wider than the viewport on narrow screens. */
+    overflow-wrap: anywhere;
+  }
+
+  .doc :where(kbd) {
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 0.8em;
+    padding: 0.15em 0.45em;
+    border-radius: 5px;
+    border: 1px solid rgb(var(--border-strong));
+    border-bottom-width: 2px;
+    background: rgb(var(--surface));
+    color: rgb(var(--fg));
+    white-space: nowrap;
+  }
+
+  /* ------------------------------------------------------------------
+     Fenced code blocks (rehype-pretty-code output, Shiki dual theme)
+     ------------------------------------------------------------------ */
+  [data-rehype-pretty-code-figure] {
+    margin: 1.5rem 0;
+    border: 1px solid rgb(var(--border));
+    border-radius: 0.75rem;
+    background: rgb(var(--surface-2));
+    overflow: hidden;
+  }
+
+  [data-rehype-pretty-code-title] {
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 0.75rem;
+    color: rgb(var(--fg-muted));
+    background: rgb(var(--surface-2));
+    border-bottom: 1px solid rgb(var(--border));
+    padding: 0.5rem 0.9rem;
+  }
+
+  [data-rehype-pretty-code-figure] pre {
+    margin: 0;
+    padding: 1.05rem 1.1rem;
+    overflow-x: auto;
+    background: transparent !important;
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 0.82rem;
+    line-height: 1.7;
+    tab-size: 2;
+  }
+
+  [data-rehype-pretty-code-figure] code {
+    display: grid;
+    background: transparent !important;
+    min-width: max-content;
+  }
+
+  [data-rehype-pretty-code-figure] [data-line] {
+    padding: 0 0.15rem;
+  }
+
+  [data-highlighted-line] {
+    background: rgb(var(--accent) / 0.1);
+    box-shadow: inset 2px 0 0 rgb(var(--accent));
+    margin: 0 -1.1rem;
+    padding-left: 0.95rem !important;
+    padding-right: 0.95rem !important;
+  }
+
+  [data-highlighted-chars] {
+    background: rgb(var(--accent) / 0.18);
+    border-radius: 3px;
+    padding: 0.1em 0.25em;
+  }
+
+  /*
+     rehype-pretty-code emits a dual theme: every token carries both a
+     `--shiki-light` and a `--shiki-dark` custom property, but no `color`.
+     These two rules apply whichever one is currently active. The
+     `[data-theme*=" "]` selector matches the dual-theme output specifically.
+  */
+  [data-rehype-pretty-code-figure] code[data-theme*=" "],
+  [data-rehype-pretty-code-figure] code[data-theme*=" "] span {
+    color: var(--shiki-light);
+  }
+
+  .dark [data-rehype-pretty-code-figure] code[data-theme*=" "],
+  .dark [data-rehype-pretty-code-figure] code[data-theme*=" "] span {
+    color: var(--shiki-dark);
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  .text-pretty {
+    text-wrap: pretty;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

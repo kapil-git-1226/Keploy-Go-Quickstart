@@ -1,0 +1,836 @@
+import { AhaMoment } from "@/components/AhaMoment";
+import { ArtifactExplorer } from "@/components/ArtifactExplorer";
+import { BackToTop } from "@/components/BackToTop";
+import { Callout } from "@/components/Callout";
+import { ConfusionCard } from "@/components/ConfusionCard";
+import { DecisionTree } from "@/components/DecisionTree";
+import { DependencyDiagram, EndToEndDiagram, RecordTestDiagram } from "@/components/Diagram";
+import { DynamicValues } from "@/components/DynamicValues";
+import { FileTree } from "@/components/FileTree";
+import { Hero } from "@/components/Hero";
+import { Outcomes } from "@/components/Outcomes";
+import { Expected, Step } from "@/components/Step";
+import { Tab, Tabs } from "@/components/Tabs";
+import { TestCaseAnatomy } from "@/components/TestCaseAnatomy";
+import { MobileTableOfContents } from "@/components/TableOfContents";
+import { Terminal } from "@/components/Terminal";
+import { TestResult } from "@/components/TestResult";
+import { WhyThisStep } from "@/components/WhyThisStep";
+
+<Hero />
+
+<MobileTableOfContents />
+
+## What you'll accomplish
+
+This tutorial follows one recording session end to end. When you finish it, you will be able to do all of the following.
+
+<Outcomes />
+
+It takes about 17 minutes to read. Running the commands takes longer than reading them, and that is the point: the artifacts described here only make sense once you have produced your own.
+
+## What you'll build
+
+You are going to run a small **URL shortener written in Go with [Echo](https://echo.labstack.com/)**, backed by **PostgreSQL**. It is deliberately boring: four routes, one table, no cleverness. That makes it the perfect subject for learning what Keploy actually does.
+
+```go title="main.go"
+r.GET("/:param", GetURL)      // look up a short code and redirect
+r.POST("/url", PutURL)        // shorten a URL
+r.DELETE("/:param", DeleteURL)
+r.PUT("/:param", UpdateURL)
+```
+
+Then you will wrap it in Keploy and walk the full loop:
+
+- **Record** two real HTTP interactions against the running app.
+- **Open** the artifacts Keploy writes: the test cases and the dependency mocks.
+- **Replay** them with `keploy test` and watch all of them pass, with **no live database needed**.
+
+By the end you will have a green test suite generated from a handful of clicks, and, more importantly, a mental model of *why* it works.
+
+<RecordTestDiagram />
+
+## Prerequisites
+
+You need six things. None of them are exotic, and everything here runs on a laptop.
+
+| Tool | Why you need it | Check it with |
+| --- | --- | --- |
+| **Docker Desktop** | Runs PostgreSQL and the Go app as containers | `docker --version` |
+| **Docker Compose v2** | Starts both services from one file | `docker compose version` |
+| **Go 1.20+** | Builds the sample application | `go version` |
+| **Keploy CLI** | Records and replays your traffic | `keploy --version` |
+| **Git** | Clones the sample | `git --version` |
+| **An HTTP client** | Makes the "real" requests you record | Postman, `curl`, or PowerShell |
+
+```bash title="One-time sanity check"
+docker --version
+docker compose version
+go version
+keploy --version
+git --version
+```
+
+If any of those fail, fix it before going further. One trap worth naming: `docker --version` prints the CLI version even when the Docker engine is stopped. Start Docker Desktop and wait until it reports that it is running, otherwise the first `docker compose up` fails with `Cannot connect to the Docker daemon`.
+
+<Callout type="note" title="On Apple Silicon">
+
+The sample pins `postgres:10.5`, and there is no arm64 build of that image. On an M-series Mac, Docker runs it under emulation, so the first boot can take a minute or more. That is why the sample's own healthcheck is willing to wait 90 seconds. If your stack is slow to come up, let it finish rather than assuming it is broken.
+
+</Callout>
+
+Install Keploy with its one-line installer, then authenticate the CLI:
+
+<Terminal
+  shell="bash"
+  command="curl --silent -O -L https://keploy.io/install.sh && source install.sh"
+  caption="Install script from keploy.io. Works on macOS and Linux, and inside WSL2/Git Bash on Windows."
+/>
+
+If `keploy` is not recognised after that, open a new terminal and try again. The installer puts the CLI in `~/.keploy/bin` and adds it to your `PATH`, and a shell that was already open will not pick that up.
+
+<Callout type="note" title="Why Keploy needs Docker privileges">
+
+Keploy observes your application at the syscall level using eBPF. In this setup that capability is granted to a small Keploy agent container rather than to your whole machine, which is why you will see an extra container appear while recording and testing. You do not have to configure it; it comes with the recorded run.
+
+</Callout>
+
+<Callout type="warning" title="The commands in this tutorial are the Docker Compose form">
+
+The official sample README shows a *native* run (`go build -cover` plus `sudo -E keploy record -c "./app"`). This tutorial documents the **containerised** run, because that is what was actually executed, and it is the path most people take on Windows. The flag names below are not interchangeable with the native form, so follow one path or the other.
+
+</Callout>
+
+## The mental model: record, capture, replay, verify
+
+Almost all Keploy confusion comes from blurring four stages into one. Keep them separate and everything else falls into place.
+
+Three words carry most of the weight from here on. A **test case** is one recorded request plus the response Keploy expects back. A **mock** is a recorded dependency answer, such as a DNS reply or a SQL result, that Keploy serves back during replay. A **test set** is the folder that holds the test cases and mocks from a single recording.
+
+**Record: you drive the application.** Keploy starts your app under observation and then gets out of the way. You use it the way a real user would: send requests, follow redirects, hit the endpoints that matter.
+
+**Capture: Keploy writes down what happened.** Every request that reaches your app is recorded, together with your app's response **and** the answers it got from its dependencies. That is the folder of editable test cases and mocks you will open in a moment.
+
+**Replay: Keploy drives the application.** Your app starts again, but this time Keploy does the talking. The recorded requests are re-sent, and instead of letting your app reach out to PostgreSQL, Keploy serves the *recorded* dependency answers back to it. Your app behaves as if the database were there.
+
+**Verify: Keploy compares and reports.** The new response is compared against the recorded one, with the fields you marked as noise skipped, and the result is a pass or a failure.
+
+| | Record + Capture | Replay + Verify |
+| --- | --- | --- |
+| **Who sends the requests** | You | Keploy |
+| **Who answers dependencies** | Real PostgreSQL and DNS | The recorded mocks |
+| **What you get** | Test cases and mocks | A pass/fail report |
+| **How often** | When behaviour changes | Every time you want to check |
+
+<Callout type="insight" title="The mental model in one line">
+
+Recording is the **input**. Verification is a **comparison against that input**. Nothing about the test run depends on your database still being up, only on the recording being complete.
+
+</Callout>
+
+## Prepare the Go application
+
+<Step n={1} title="Clone the sample">
+Get the quickstart onto your machine, then move into the Echo + SQL sample.
+
+```bash title="Clone and enter the sample"
+git clone https://github.com/keploy/samples-go.git
+cd samples-go/echo-sql
+go mod download
+```
+
+Everything from here on runs from this directory.
+
+</Step>
+
+<Step n={2} title="Point the app at the Postgres service, not localhost">
+This is the single most common reason a containerised run fails, so it is worth understanding properly.
+
+<WhyThisStep label="Why do I have to edit the sample at all?">
+The sample is written so it can run either natively on your machine or inside Docker Compose. The database host in `main.go` is the one line that differs between those two setups, so it is the only edit you need before recording.
+</WhyThisStep>
+
+The app reads its database host from `main.go`. Open it and make sure the host is the **Compose service name**:
+
+```go title="main.go"
+Database, err = NewConnection(ctx, ConnectionDetails{
+    host:     "postgres", // ← the Compose service name
+    // host:  "localhost" (only correct when the app runs outside Docker)
+    port:     "5432",
+    user:     "postgres",
+    password: "password",
+    dbName:   "postgres",
+})
+```
+
+<Callout type="important" title="localhost means “this same container”">
+
+Inside a Docker network, `localhost` resolves to **the container the code is running in**, not your laptop, and not the database.
+
+So with `host: "localhost"`, the Go container tries to reach PostgreSQL at `127.0.0.1:5432`, which is *itself*. There is nothing listening there, and the connection is refused.
+
+Docker Compose runs an internal DNS server for every network. Every service is reachable by its **service name**: here, `postgres`. That is why the host becomes `postgres`, and it is also why you will see DNS lookups recorded later in `mocks.yaml`.
+
+</Callout>
+
+</Step>
+
+<Step n={3} title="Find out what your Docker network is really called">
+The Compose file declares a network called `babab`:
+
+```yaml title="docker-compose.yml (excerpt)"
+networks:
+  babab:
+    external: false
+```
+
+Docker Compose, however, **prefixes network names with the project name**, which defaults to the folder it lives in. Because you cloned into `echo-sql`, the network that actually exists at runtime is not `babab`, it is:
+
+```text
+echo-sql_babab
+```
+
+If you cloned into a directory with a different name, yours will begin with that name instead.
+
+Confirm it before you go any further, and note the exact string; Keploy needs it explicitly:
+
+<Terminal
+  shell="PowerShell"
+  command="docker network ls"
+  caption="Look for the network whose name ends in _babab. That full name is what you pass to Keploy."
+/>
+
+<Callout type="tip" title="Why this matters">
+
+The name in your Compose YAML is a *logical* name. The name Docker actually creates is a *runtime* name. When another tool has to join that network (and Keploy does), it needs the runtime name. Guessing `babab` here costs a confusing debugging session; checking `docker network ls` costs five seconds.
+
+</Callout>
+
+</Step>
+
+## Start recording
+
+<Step n={1} title="Run Keploy in record mode">
+Keploy will start your Compose stack for you, attach itself to the right network, wait for the services to come up, and then sit and listen. If you already have `docker compose up` running in another terminal, stop it first: Keploy needs to start the application itself.
+
+<WhyThisStep>
+Keploy has to own the application process. It observes the app while the app runs, so the app has to start *under* Keploy rather than in a separate terminal. That is why the command below passes `docker compose up` instead of pointing at a container you started yourself.
+</WhyThisStep>
+
+<Terminal
+  shell="PowerShell"
+  command={`keploy record -c "docker compose up" --container-name "echoApp" --network-name "echo-sql_babab" --build-delay 50`}
+/>
+
+Here is what each flag is doing. Read this table once and the command stops looking like magic:
+
+| Flag | What it does |
+| --- | --- |
+| `record` | Puts Keploy into capture mode: it observes, it does not yet replay. |
+| `-c "docker compose up"` | The command Keploy uses to **start your application**. It runs this for you instead of you starting the stack yourself. |
+| `--container-name "echoApp"` | Which container is the app to observe. This is the `container_name` from the Compose file. |
+| `--network-name "echo-sql_babab"` | The **actual** Docker network from the previous step. Without this, Keploy's agent cannot share a network with your app and its database. |
+| `--build-delay 50` | Gives the image build and the services 50 seconds to become ready before Keploy starts capturing. Raise it if your first build is slow. |
+
+<Expected>
+
+Keploy builds and starts your stack, reports that it is recording, and leaves you with a running application on `http://localhost:8082`. If you run `docker ps` in another terminal you should see the Keploy agent container alongside `echoApp` and `postgresDb`.
+
+</Expected>
+
+<Callout type="warning" title="If it doesn't work: “connection refused” on 127.0.0.1:5432">
+
+If you see `failed to dial destination server ... 127.0.0.1:5432 ... connection refused`, your app is still trying to talk to PostgreSQL on `localhost`. Go back to Step 2 (`host: "postgres"`) and Step 3 (`--network-name`). This error has nothing to do with the HTTP request you are about to make; it happens before any request arrives.
+
+</Callout>
+
+</Step>
+
+## Make a real API request
+
+Now use the application. This is the part that matters: Keploy is not recording a mock you wrote, it is recording **reality**. What you do here becomes the test.
+
+<WhyThisStep label="Why does a real request matter?">
+There is nothing for Keploy to replay until something actually happens. The request you send here, and the response your application produces, become the test case. You do not write a test file: you use the application, and Keploy writes the test for you.
+</WhyThisStep>
+
+<Step n={1} title="Shorten a URL">
+Send a `POST` to `/url` with a URL to shorten. Pick whichever client you have.
+
+<Tabs label="Choose your HTTP client">
+<Tab label="Postman (easiest on Windows)">
+
+Create a `POST` request to `http://localhost:8082/url`, set the body type to **raw → JSON**, and send:
+
+```json title="Request body"
+{
+  "url": "https://github.com"
+}
+```
+
+This was the route actually used during the recorded run, because it sidesteps shell quoting differences entirely.
+
+</Tab>
+<Tab label="PowerShell (no curl needed)">
+
+PowerShell's `curl` is an alias for `Invoke-WebRequest`, which does not accept `curl`'s flags. The cleanest fix is to use PowerShell's own HTTP cmdlet:
+
+```powershell title="PowerShell"
+Invoke-RestMethod -Method Post `
+  -Uri http://localhost:8082/url `
+  -ContentType "application/json" `
+  -Body '{"url":"https://github.com"}'
+```
+
+</Tab>
+<Tab label="curl (bash / zsh / Git Bash)">
+
+On a Unix-style shell the classic `curl` form works exactly as the sample README describes:
+
+```bash title="bash"
+curl --request POST \
+  --url http://localhost:8082/url \
+  --header 'content-type: application/json' \
+  --data '{"url": "https://github.com"}'
+```
+
+</Tab>
+</Tabs>
+
+</Step>
+
+<Step n={2} title="Read the response">
+The app returns a JSON object containing the shortened URL and a timestamp:
+
+```json title="Response: 200 OK"
+{
+  "ts": 1790749400511196374,
+  "url": "http://localhost:8082/4KepjkTT"
+}
+```
+
+<Expected>
+
+A `200 OK` with a JSON body carrying `ts` and a shortened `url` on `http://localhost:8082/`. Because the short code is derived from the URL itself, shortening `https://github.com` will always produce the same code.
+
+</Expected>
+
+Two things to notice:
+
+- The short code (`4KepjkTT`) is generated by hashing the original URL, so it is **deterministic**: the same URL always produces the same code.
+- The `ts` field is a nanosecond timestamp. It will be **different on every single run**. Remember that; it becomes the centrepiece of the next section.
+
+<Callout type="insight" title="This request is now a test case">
+
+Without writing a single line of test code, you have just created a reproducible test: "POST this body to `/url`, and expect a 200 with this shape of response". Keploy captured all of it, including the exact response.
+
+</Callout>
+
+</Step>
+
+## Follow the short URL
+
+<Step n={1} title="Request the short code">
+Do not stop at one endpoint. The interesting part of a URL shortener is the redirect, and it is a completely different code path: it looks the code up in PostgreSQL, then issues an HTTP redirect.
+
+Request the short code you just received:
+
+<Terminal
+  shell="PowerShell"
+  command="Invoke-WebRequest -Uri http://localhost:8082/4KepjkTT -MaximumRedirection 0 -SkipHttpErrorCheck"
+  caption="Or simply open http://localhost:8082/4KepjkTT in a browser, though a client you can read the status line from is more useful for recording."
+/>
+
+The application responds with a redirect:
+
+```text title="Response: 308 Permanent Redirect"
+HTTP/1.1 308 Permanent Redirect
+Location: https://github.com
+Content-Length: 0
+```
+
+<Callout type="note" title="Why bother with a second request?">
+
+Because a test suite with one request only proves that one thing works. These two requests cover **both halves** of the application's behaviour:
+
+- `POST /url` exercises the *write* path: check for an existing code, insert a row, return JSON.
+- `GET /:code` exercises the *read* path: look up the row by ID, then redirect.
+
+They are independent behaviours, and they will become two independent test cases.
+
+</Callout>
+
+</Step>
+
+## Stop recording
+
+<Step n={1} title="Interrupt Keploy">
+Press <kbd>Ctrl</kbd> + <kbd>C</kbd> in the terminal running Keploy. It stops the stack, finalises everything it observed, and writes the results to disk.
+
+<WhyThisStep>
+Everything Keploy needs for replay is written out at this moment. Until the process stops, the artifacts are incomplete, so let it shut down cleanly rather than closing the terminal window.
+</WhyThisStep>
+
+<Expected>
+
+A `keploy/` directory appears **next to where you ran the command**. For this project that is `samples-go/echo-sql/keploy/`, and it holds one test set covering the two requests you made.
+
+</Expected>
+
+<Callout type="tip" title="Recording is a one-off">
+
+You do not need to re-record for every test run. Recording is what you do when the *behaviour* changes. Testing is what you do constantly. Many people record once and then run `keploy test` on every commit for months.
+
+</Callout>
+
+</Step>
+
+## What Keploy generated
+
+This is where Keploy stops being a black box. Here is the directory it produced:
+
+<FileTree
+  caption="echo-sql/keploy, after one recording"
+  root={{
+    name: "keploy/",
+    type: "dir",
+    children: [
+      {
+        name: "test-set-0/",
+        type: "dir",
+        children: [
+          {
+            name: "tests/",
+            type: "dir",
+            children: [
+              { name: "post-url-1.yaml", note: "the POST we made" },
+              { name: "get-4kepjktt-1.yaml", note: "the redirect we followed" },
+            ],
+          },
+          { name: "mocks.yaml", note: "recorded dependency interactions", highlight: true },
+          { name: "mappings.yaml", note: "which mocks belong to which test case" },
+          { name: "config.yaml", note: "test-set metadata" },
+          { name: "agent-debug.log", note: "Keploy's own log output" },
+        ],
+      },
+    ],
+  }}
+/>
+
+<Expected>
+
+One test set, with one test case per interaction you recorded, and the mock files beside them. If you made more requests than the two shown here, you will find more files in `tests/`: Keploy names each one after the request it captured.
+
+</Expected>
+
+Here is what matters, in the order you should care about it:
+
+- **`tests/*.yaml`**: one file per recorded request. This is your test suite, and it is fully editable YAML. Open one and you can see exactly what will be sent and what is expected back.
+- **`mocks.yaml`**: everything your app asked of the outside world: DNS lookups, the PostgreSQL session, and the SQL statements with their results. This file is the reason replay can run without a database.
+- **`mappings.yaml`**: the glue. It records which mocks belong to which test case, and which mocks are needed just to boot the app (the `startup` entries).
+- **`config.yaml`**: test-set level metadata.
+- **`agent-debug.log`**: Keploy's own diagnostics. You can ignore this until something goes wrong.
+
+<Callout type="note" title="One more file worth noticing">
+
+Alongside `keploy/`, Keploy also leaves behind a `docker-compose-tmp.yaml`: a rewritten copy of your Compose file with its agent service injected. That is how it observes the app without you changing any application code: your `main.go` and `Dockerfile` are untouched.
+
+</Callout>
+
+## Artifact explorer
+
+Six files came out of that one recording. Select any of them to see what it is for and a representative excerpt. Values that are machine specific, such as request tokens and registry hashes, are trimmed.
+
+<ArtifactExplorer />
+
+## Test case anatomy
+
+A test case is not a script. It is a request, an expectation, and a short list of fields to leave alone. Here is `post-url-1.yaml` broken into those parts:
+
+<TestCaseAnatomy />
+
+Read it as a sentence: *"Send a `POST` to `/url` with this JSON body. Expect a `200 OK` whose body is this JSON."* That is the entire contract, and it is readable by a human.
+
+The redirect test case is the same shape, with `method: GET` and a `308` response carrying `Location: https://github.com`.
+
+<Callout type="tip" title="Keploy also writes you a runnable curl">
+
+Each test case ends with a generated `curl:` field: a ready-to-paste command that reproduces the recorded request. It is a nice sanity check: you can re-issue a recorded request by hand without reconstructing headers from memory.
+
+</Callout>
+
+## What Keploy captured
+
+Why is this more than a saved HTTP request? Because a real request is rarely just a client talking to an endpoint. Here is the part that changes how you think about it.
+
+Open `mocks.yaml` and you find that Keploy did not just record *HTTP*. It recorded your application's **conversations with its dependencies**.
+
+**First, a DNS lookup.** Before your app could reach PostgreSQL, it had to resolve the hostname. Keploy captured that too:
+
+```yaml title="keploy/test-set-0/mocks.yaml (excerpt)"
+kind: DNS
+name: mock-1
+
+spec:
+  request:
+    name: postgres.
+    qtype: 1
+  response:
+    rcode: 0
+    answers:
+      - "postgres.\t600\tIN\tA\t172.19.0.2"
+```
+
+**Then the PostgreSQL session.** Keploy recorded the handshake metadata of the connection:
+
+```yaml title="keploy/test-set-0/mocks.yaml (excerpt)"
+kind: PostgresV3
+name: mock-2
+
+spec:
+  postgresV3:
+    type: session
+    session:
+      protocolVersion: "3.0"
+      serverVersion: 10.5 (Debian 10.5-2.pgdg90+1)
+```
+
+**Then the actual SQL**, with the responses your app received. Three of them matter, and together they tell the story of a single `POST /url`:
+
+```yaml title="mocks.yaml (excerpt): table creation, on boot"
+kind: PostgresV3
+name: mock-4
+spec:
+  postgresV3:
+    type: query
+    query:
+      class: DDL
+      sqlNormalized: "CREATE TABLE IF NOT EXISTS url_map (...)"
+      response:
+        commandComplete: CREATE TABLE
+```
+
+```yaml title="mocks.yaml (excerpt): does this code already exist?"
+kind: PostgresV3
+name: mock-6
+spec:
+  postgresV3:
+    type: query
+    query:
+      class: APP
+      sqlNormalized: "SELECT * FROM url_map WHERE id = $1"
+      response:
+        commandComplete: SELECT 0      # no rows: a brand new code
+```
+
+```yaml title="mocks.yaml (excerpt): insert the record"
+kind: PostgresV3
+name: mock-7
+spec:
+  postgresV3:
+    type: query
+    query:
+      class: APP
+      sqlNormalized: "INSERT INTO url_map (id, redirect_url, created_at, updated_at) VALUES ($1, $2, $3, $4)"
+      response:
+        commandComplete: INSERT 0 1
+```
+
+And for the redirect test case, the read path, with the row data captured alongside the query:
+
+```yaml title="mocks.yaml (excerpt): the redirect lookup"
+kind: PostgresV3
+name: mock-9
+spec:
+  postgresV3:
+    type: query
+    query:
+      class: APP
+      sqlNormalized: "SELECT * FROM url_map WHERE id = $1"
+      response:
+        rows:
+          - - 4KepjkTT
+            - https://github.com
+        commandComplete: SELECT 1
+```
+
+<DependencyDiagram highlight />
+
+<AhaMoment label="Keploy does not only remember the HTTP request.">
+
+A single HTTP request is never just *client → endpoint*. It is:
+
+**client → your application → database / DNS / cache / third-party API**
+
+For this quickstart that chain was the **DNS lookup** for `postgres`, the **PostgreSQL session**, and the **SQL statements** the application executed. Replay works without a live database because those recorded interactions are served back to your application, which receives the exact answers it received originally. It has no idea the database is gone.
+
+</AhaMoment>
+
+This also explains the last file. `mappings.yaml` records which mocks belong to which test case, and, importantly, which mocks are needed to **boot** the application, before any request is replayed:
+
+```yaml title="mappings.yaml (excerpt)"
+tests:
+  - id: post-url-1
+    mock_entries:
+      - name: mock-6
+        kind: PostgresV3
+      - name: mock-7
+        kind: PostgresV3
+
+startup:
+  - name: mock-4        # the CREATE TABLE, needed before any request runs
+    kind: PostgresV3
+```
+
+## Why dynamic values matter
+
+The two `noise` entries in `post-url-1.yaml` are the difference between a test suite that is useful and one that fails every single time.
+
+**The problem.** The recorded response contains `"ts": 1790751171687683657` and a `Date` header. When the same request is replayed a couple of minutes later, the application produces a *different* timestamp and a *different* `Date`. The URL shortener did exactly what it was supposed to do, but a naive byte-for-byte comparison would call it a failure, every time, forever. A test that always fails teaches you to ignore it, which is worse than having no test at all.
+
+**The fix.** Fields listed under `noise` are excluded from the comparison; everything else is still asserted. Here is that one request as it was recorded, and as it came back when the suite was replayed in the run this tutorial is based on. You will replay your own in the next section.
+
+<DynamicValues />
+
+The `ts` values differ, the `url` value is identical, and the test is marked `normal: true`, a pass. Keploy compared the part that carries meaning and ignored the part that cannot possibly be stable.
+
+<Callout type="note" title="You did not have to write this by hand">
+
+Older versions of the sample documentation ask you to manually add `body.ts: []` under `header.Date: []` before running the tests. Keploy 3.8.49 detected both as volatile on its own. It is still worth knowing the mechanism exists, because you will eventually record an endpoint that returns something unpredictable (a `request_id`, a signed token, a random seed), and you will need to tell Keploy to ignore it.
+
+</Callout>
+
+<Callout type="warning" title="Noise is a sharp tool">
+
+Only silence fields that are *genuinely* non-deterministic. Adding `body.url` to the noise list would make this test pass even if the shortener returned a completely wrong URL; you would have disabled the assertion that actually matters. When in doubt, leave it asserted and see whether the test fails for a real reason.
+
+</Callout>
+
+## Run the test
+
+<Step n={1} title="Replay the recorded suite">
+`keploy test` uses the same flags as `record`, plus one extra: an additional delay to let the freshly started stack settle before requests begin flying.
+
+<WhyThisStep>
+This is the same application, started the same way, with one difference: Keploy answers the application's dependency calls from `mocks.yaml` instead of letting it reach PostgreSQL and DNS. Your application code is unchanged, and that is the point.
+</WhyThisStep>
+
+<Terminal
+  shell="PowerShell"
+  command={`keploy test -c "docker compose up" --container-name "echoApp" --network-name "echo-sql_babab" --build-delay 50 --delay 10`}
+/>
+
+<Callout type="note" title="Why the extra --delay 10">
+
+`--build-delay 50` covers building and starting the stack, in seconds. `--delay 10` is a further 10 seconds of grace after startup and before the first request is replayed. Between them they prevent the classic flake where a test fires half a second before the app is listening. If your own runs are flaky, this is the first knob to turn.
+
+</Callout>
+
+</Step>
+
+<Step n={2} title="Read the result">
+This is the actual output of the run:
+
+```text title="keploy test: output"
+TESTRUN SUMMARY. For test-set: "test-set-0"
+Total tests: 2
+Total test passed: 2
+Total test failed: 0
+Time Taken: "17.14 s"
+
+COMPLETE TESTRUN SUMMARY
+
+Total tests: 2
+Total test passed: 2
+Total test failed: 0
+
+phase: verified_green
+
+summary:
+All 2 test(s) passed across 1 test-set(s).
+Suite is green and dependency-free.
+```
+
+<TestResult />
+
+<Callout type="success" title="2 / 2 passed, and note the last line">
+
+`Suite is green and dependency-free` is Keploy telling you the thing that matters: no live PostgreSQL, no DNS resolver, no external service was required to run these tests. Everything the application needed came from `mocks.yaml`.
+
+</Callout>
+
+</Step>
+
+## What just happened
+
+Step back and follow one request all the way through:
+
+<EndToEndDiagram />
+
+That is the complete loop, and every arrow in it was generated by the run you just did, not written by hand:
+
+- The **test cases** came from your two requests.
+- The **mocks** came from your app's own SQL and DNS traffic.
+- The **pass/fail comparison** came from replaying both and comparing responses, with volatile fields excluded.
+
+## Clean up
+
+When you are done experimenting, stop the stack:
+
+<Terminal
+  shell="PowerShell"
+  command="docker compose down"
+  caption="Stops the containers and the network. Your keploy/ directory is left exactly where it is."
+/>
+
+Keep `keploy/`. It is your test suite: you can run `keploy test` again at any time without re-recording, so it belongs in version control rather than in a scratch folder. If you also want to discard the PostgreSQL data volume and start from a completely empty database, use `docker compose down -v`.
+
+## Common confusions
+
+Four things caused almost all of the friction in this quickstart. Each answer is short, and the [Troubleshooting](#troubleshooting) section below walks through the fixes in order.
+
+<ConfusionCard question="Why is the Docker network called echo-sql_babab?">
+
+The Compose file declares the network simply as:
+
+```yaml
+networks:
+  babab:
+    external: false
+```
+
+Docker Compose prefixes network names with the project name, which defaults to the folder the Compose file lives in. This project is `echo-sql`, so the network that actually exists on the machine is `echo-sql_babab`, not `babab`.
+
+Keploy joins that network by name, which is why the recording command spells it out. `docker network ls` prints the real name.
+
+</ConfusionCard>
+
+<ConfusionCard question="Why does localhost not point to PostgreSQL?">
+
+Inside a container, `localhost` is that container. PostgreSQL runs in a different container, so from the Go application's point of view nothing is listening on `127.0.0.1:5432`.
+
+Compose runs an internal DNS server for every network, and each service is reachable by its service name. That is why the sample connects to `postgres`:
+
+```go
+host: "postgres"
+```
+
+</ConfusionCard>
+
+<ConfusionCard question="Why can a generated value change between runs?">
+
+The response body carries a nanosecond timestamp:
+
+```json
+{"ts":1790751171687683657,"url":"http://localhost:8082/4KepjkTT"}
+```
+
+`ts` is the current time, so it differs on every execution, and the `Date` response header moves with it. Comparing those fields literally would fail even when the endpoint behaved correctly. Keploy records them as noise, which is covered under [Dynamic values](#why-dynamic-values-matter).
+
+</ConfusionCard>
+
+<ConfusionCard question="Why does a replay care about database interactions?">
+
+The application cannot produce a response without SQL. `POST /url` checks whether a short code already exists and inserts a row; following the short URL reads a row back.
+
+At record time Keploy captured those interactions, so at replay time it can hand the application the same answers without a live database. That is what `mocks.yaml` is for, and it is explained under [Dependency recording](#what-keploy-captured).
+
+</ConfusionCard>
+
+## Troubleshooting
+
+These are the problems worth knowing about in advance: the ones that teach something reusable. Start from the symptom you are actually seeing.
+
+<DecisionTree
+  start="Keploy is not behaving the way you expected"
+  nodes={[
+    { symptom: "The application runs on its own, but Keploy cannot see it.", href: "#the-docker-network-name-is-not-the-name-in-the-compose-file", linkLabel: "Docker network name" },
+    { symptom: "The app starts and immediately fails to reach PostgreSQL.", href: "#connection-refused-on-1270015432", linkLabel: "Connection refused" },
+    { symptom: "A test fails on a value that looks different on every run.", href: "#a-test-fails-because-a-value-keeps-changing", linkLabel: "Volatile values" },
+    { symptom: "Replay complains that a dependency mock is missing.", href: "#stale-artifacts-and-a-missing-postgresv3session-mock", linkLabel: "Stale artifacts" },
+    { symptom: "The generated files are hard to read.", href: "#the-generated-files-look-like-noise", linkLabel: "Generated files" },
+  ]}
+/>
+
+### The Docker network name is not the name in the Compose file
+
+**Symptom:** Keploy cannot see your app or your database; connections fail even though `docker compose up` works fine on its own.
+
+**Cause:** Compose prefixes network names with the project name. `babab` in the YAML becomes `echo-sql_babab` at runtime.
+
+**Fix:** Ask Docker, do not guess:
+
+<Terminal shell="PowerShell" command="docker network ls" />
+
+Pass the full runtime name to `--network-name`. If your Compose project lives in a different folder, the prefix will differ too.
+
+### `connection refused` on `127.0.0.1:5432`
+
+**Symptom:** The app starts and immediately dies with `failed to dial destination server ... 127.0.0.1:5432`.
+
+**Cause:** Inside a container, `localhost` is the container itself. Your Go process is trying to open a Postgres connection to the wrong machine entirely.
+
+**Fix:** Use the Compose **service name** (`postgres`) as the host. Service names are resolved by Docker's internal DNS, which is exactly the DNS lookup you can see recorded in `mocks.yaml`.
+
+### The generated files look like noise
+
+**Symptom:** Ten YAML files appear and you do not know which to open.
+
+**Cause:** Keploy writes several artifacts with different jobs.
+
+**Fix:** Read them in dependency order of usefulness: `tests/*.yaml` first (what gets sent and expected), then `mocks.yaml` (what the app depended on), then `mappings.yaml` (which mocks go with which case). You rarely need `config.yaml` or `agent-debug.log`.
+
+### A test fails because a value keeps changing
+
+**Symptom:** The same test passes locally once and then fails on replay with a value that looks trivially different.
+
+**Cause:** The response contains something non-deterministic: a timestamp, a UUID, a token.
+
+**Fix:** Add that field to `assertions.noise` in the test case. Then ask yourself whether the field was actually worth asserting. Silence only the fields that genuinely cannot be stable.
+
+### Stale artifacts, and a missing `PostgresV3Session` mock
+
+**Symptom:** Replay fails because Keploy cannot find the PostgreSQL session mock, even though a recording succeeded earlier.
+
+**Cause:** The earlier artifacts were incomplete or left over from an interrupted run. Hand-editing generated mocks to patch this is a losing game.
+
+**Fix:** Re-record. Preserve the old directory if you want it (`keploy-old`), then run `keploy record` again so Keploy writes a fresh, complete set. When recorded dependency state is stale, a clean recording is almost always faster and more reliable than surgery on the YAML.
+
+### PowerShell is not bash
+
+**Symptom:** A `curl ... \` command copied from the docs explodes with a wall of parameter errors.
+
+**Cause:** In PowerShell, `curl` is an alias for `Invoke-WebRequest`, and the line-continuation character is a backtick, not a backslash. Unix quoting conventions do not carry over.
+
+**Fix:** Use `Invoke-RestMethod` (shown earlier), or use Postman, or install Git Bash and use real `curl`. This has nothing to do with Keploy, but it is the most common reason a Windows reader gives up on a tutorial, so it is worth naming.
+
+## What confused me
+
+Two things tripped me up, and both were assumptions rather than Keploy bugs.
+
+**01. The Docker network name was not the network key in the Compose file.** The file declares `babab`; Docker created `echo-sql_babab`, because Compose prefixes network names with the project name. Keploy has to be told the runtime name, not the one written in the YAML.
+
+**02. A replay depends on dependency mocks, not only the recorded request.** I assumed the test case was the whole story. Opening `mocks.yaml` and seeing the DNS lookup and the SQL statements is what made it clear that the database interactions have to be reproduced too.
+
+The habit I took away from this: when a flag looks unguessable, find out why it exists. `--network-name "echo-sql_babab"` is meaningless until you know that Compose rewrites network names, and knowing that is the difference between copy-pasting and understanding.
+
+## The takeaway
+
+The whole workflow is four moves:
+
+**RECORD → CAPTURE → REPLAY → VERIFY**
+
+- **Record** real traffic once, against the real thing.
+- **Capture** what Keploy wrote, and read it: test cases are requests and expectations, mocks are dependency answers.
+- **Replay** the suite as often as you like, with dependencies served from the recording: in CI, on every pull request, with no database.
+- **Verify** the result, and decide what genuinely belongs in the noise list.
+
+You now know something that a lot of people who use record-and-replay tools never learn: a passing test is not proof that your code works in production. It is proof that the request you recorded still behaves the way it did. Knowing which of your dependencies are covered by mocks (and which are not) is what makes the difference.
+
+<Callout type="tip" title="Where to go next">
+
+Apply the same loop to an endpoint your application actually has. Better still, try recording an endpoint that returns something non-deterministic (a generated ID or a signed token), and work out what belongs in the `noise` list. That is the exercise that turns this tutorial into a skill.
+
+</Callout>
+
+<BackToTop />
